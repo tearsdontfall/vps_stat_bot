@@ -71,8 +71,8 @@ def get_vnstat_data():
             
         # ИСПРАВЛЕНО: vnstat в json хранит данные в KiB. 
         # Переводим KiB в GiB делением на 1024 во второй степени.
-        rx_gib = total_rx / (1000*3)
-        tx_gib = total_tx / (1000*3)
+        rx_gib = total_rx / (1000**3)
+        tx_gib = total_tx / (1000**3)
         total_gib = rx_gib + tx_gib
         
         return total_gib, rx_gib, tx_gib
