@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+import traceback
 
 # Загружаем переменные из файла .env
 load_dotenv()
@@ -24,34 +25,50 @@ def get_vnstat_data():
     Возвращает (total, rx, tx) за текущий месяц в Гигабайтах.
     """
     try:
-        # Вызываем vnstat с флагом --json без привязки к конкретному интерфейсу.
-        # Это заставит vnstat выдать данные по всем интерфейсам.
+        # Выполняем команду
         result = subprocess.check_output(['vnstat', '--json'], text=True)
         data = json.loads(result)
         
+        # ОТЛАДКА: Проверим, что вообще пришло от vnstat
+        if not data.get('interfaces'):
+            print("Внимание: vnstat вернул пустой список интерфейсов!")
+            return None, 0, 0
+            
         total_rx = 0
         total_tx = 0
+        has_data = False
         
-        # Проходим по всем найденным интерфейсам в системе
         for iface in data.get('interfaces', []):
-            # Пропускаем docker и виртуальные интерфейсы, чтобы не задваивать локальный трафик
+            # Игнорируем локальные и докер-интерфейсы
             if iface['name'].startswith(('docker', 'veth', 'lo')):
                 continue
                 
-            months = iface.get('traffic', {}).get('month', [])
+            # Проверяем структуру JSON
+            traffic = iface.get('traffic', {})
+            # В зависимости от версии vnstat, ключ может называться 'month' или 'months'
+            months = traffic.get('month', []) or traffic.get('months', [])
+            
             if months:
-                current_month = months[-1] # Данные за текущий месяц
-                total_rx += current_month['rx']
-                total_tx += current_month['tx']
+                current_month = months[-1]  # Берем текущий месяц
+                total_rx += current_month.get('rx', 0)
+                total_tx += current_month.get('tx', 0)
+                has_data = True
         
+        if not has_data:
+            print("Внимание: Ни один интерфейс не содержит данных за текущий месяц.")
+            return None, 0, 0
+            
         # Переводим суммарные KiB в GiB
         rx_gib = total_rx / (1024**2)
         tx_gib = total_tx / (1024**2)
         total_gib = rx_gib + tx_gib
         
         return total_gib, rx_gib, tx_gib
+
     except Exception as e:
-        print(f"Ошибка при сборе общего трафика vnstat: {e}")
+        # Печатаем подробную ошибку в логи Docker
+        print(f"Критическая ошибка в get_vnstat_data: {e}")
+        traceback.print_exc() 
         return None, 0, 0
 
 def get_keyboard():
