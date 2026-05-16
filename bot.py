@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Настройка логирования в стандартный вывод (stdout) для сбора логов Docker
+# Настройка логирования в стандартный вывод (stdout) для Docker логов
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 logger.info("=== Скрипт bot.py запущен ===")
 
-# Загружаем переменные конфигурации из файла .env
+# Загружаем конфигурацию из .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -32,7 +32,6 @@ except ValueError:
     logger.error(f"Ошибка: Не удалось перевести ADMIN_ID '{ADMIN_ID_RAW}' в число!")
     ADMIN_ID = 0
 
-# Пути к файлам данных, которые монтируются с хоста
 VNSTAT_JSON_PATH = "vnstat_data.json"
 SYSTEM_JSON_PATH = "system_data.json"
 
@@ -90,7 +89,7 @@ def get_system_stats():
         return None
 
 def get_keyboard():
-    """Формирует актуальную кнопку для интерфейса Telegram."""
+    """Формирует кнопку для интерфейса Telegram."""
     button = KeyboardButton(text="📊 Проверить статус")
     return ReplyKeyboardMarkup(keyboard=[[button]], resize_keyboard=True)
 
@@ -99,13 +98,11 @@ async def handle_all_messages(message: types.Message):
     """Единый диспетчер сообщений с проверкой прав администратора."""
     logger.info(f"📢 Входящий запрос: '{message.text}' от ID: {message.from_user.id}")
     
-    # Проверка безопасности по ID пользователя
     if message.from_user.id != ADMIN_ID:
         logger.warning(f"🔒 Доступ заблокирован для ID {message.from_user.id}. Ожидался ADMIN_ID: {ADMIN_ID}")
         await message.answer("❌ У вас нет доступа к управлению этим сервером.")
         return
 
-    # Обработка команды /start
     if message.text == "/start":
         await message.answer(
             f"Привет! Бот успешно обновлен и готов к мониторингу сервера.\n"
@@ -116,7 +113,6 @@ async def handle_all_messages(message: types.Message):
         )
         return
 
-    # Обработка кнопок запроса статистики
     if message.text in ["📊 Проверить статус", "Проверить трафик"]:
         logger.info(f"🔄 Обработка запроса статистики для администратора...")
         
@@ -152,24 +148,27 @@ async def handle_all_messages(message: types.Message):
         return
 
 async def scheduled_tasks():
-    """Фоновый цикл проверки критической нагрузки RAM с безопасным приведением типов."""
+    """Фоновый цикл проверки нагрузки RAM с максимальной защитой от ошибок типов."""
     while True:
         sys_stats = get_system_stats()
         if sys_stats:
             try:
-                # ИСПРАВЛЕНИЕ ОШИБКИ ТИПОВ: Безопасно переводим строковое значение 'pct' в число float
-                ram_pct_raw = sys_stats.get('ram', {}).get('pct', '0')
-                ram_pct = float(ram_pct_raw)
+                # Получаем значение, убираем пробелы и знаки процентов
+                ram_pct_raw = str(sys_stats.get('ram', {}).get('pct', '0')).replace('%', '').strip()
                 
-                # Теперь сравнение float > float отработает корректно
-                if ram_pct > 50.0:
-                    await bot.send_message(
-                        ADMIN_ID, 
-                        f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ:* Использование оперативной памяти составляет `{ram_pct}%`!",
-                        parse_mode="Markdown"
-                    )
+                # Проверяем, что строка не пустая и содержит число
+                if ram_pct_raw and ram_pct_raw != "None":
+                    ram_pct = float(ram_pct_raw)
+                    
+                    # Если память заполнена более чем на 50%, отправляем алерт
+                    if ram_pct > 50.0:
+                        await bot.send_message(
+                            ADMIN_ID, 
+                            f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ:* Использование оперативной памяти составляет `{ram_pct}%`!",
+                            parse_mode="Markdown"
+                        )
             except (ValueError, TypeError) as e:
-                logger.error(f"Не удалось обработать метрику RAM для алерта: {e}")
+                logger.error(f"Ошибка конвертации RAM в число: {e}. Значение было: '{ram_pct_raw}'")
             except Exception as e:
                 logger.error(f"Непредвиденная ошибка в фоновом таске: {e}")
         await asyncio.sleep(30)
