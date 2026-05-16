@@ -15,28 +15,22 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 MONTHLY_LIMIT_GB = float(os.getenv("MONTHLY_LIMIT_GB", 1000.0))
 
-# Путь к файлу с данными, который мы пробросим в контейнер
-JSON_FILE_PATH = "vnstat_data.json"
+# Пути к файлам данных внутри контейнера
+VNSTAT_JSON_PATH = "vnstat_data.json"
+SYSTEM_JSON_PATH = "system_data.json"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 def get_vnstat_data():
-    """
-    Читает сгенерированный хостом JSON-файл, находит данные за текущий 
-    календарный месяц по всем интерфейсам и возвращает (total, rx, tx) в GiB.
-    """
+    """Читает трафик сетевых интерфейсов за текущий месяц в GiB."""
     try:
-        # Проверяем, существует ли файл
-        if not os.path.exists(JSON_FILE_PATH):
-            print(f"Ошибка: Файл {JSON_FILE_PATH} еще не создан планировщиком хоста.")
+        if not os.path.exists(VNSTAT_JSON_PATH):
             return None, 0, 0
             
-        # Читаем JSON-файл
-        with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+        with open(VNSTAT_JSON_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        # Получаем текущие дату и время для точной фильтрации
         now = datetime.now()
         current_year = now.year
         current_month_num = now.month
@@ -45,114 +39,162 @@ def get_vnstat_data():
         total_tx = 0
         has_data = False
 
-        # Проходим циклом по всем интерфейсам в системе
         for iface in data.get('interfaces', []):
-            # Игнорируем локальные петли и подсети Docker
             if iface['name'].startswith(('docker', 'veth', 'lo')):
                 continue
-                
             traffic = iface.get('traffic', {})
-            # Подстраховываемся на случай разных версий vnstat (month или months)
             months_list = traffic.get('month', []) or traffic.get('months', [])
             
-            # Ищем нужный месяц за один линейный проход
             for m in months_list:
                 date_info = m.get('date', {})
-                
-                # Проверяем строгое соответствие текущему году и месяцу
                 if date_info.get('year') == current_year and date_info.get('month') == current_month_num:
                     total_rx += m.get('rx', 0)
                     total_tx += m.get('tx', 0)
                     has_data = True
-                    break  # Нашли совпадение для интерфейса — выходим из внутреннего цикла
+                    break
         
         if not has_data:
             return None, 0, 0
             
-        # ИСПРАВЛЕНО: vnstat в json хранит данные в KiB. 
-        # Переводим KiB в GiB делением на 1024 во второй степени.
-        rx_gib = total_rx / (1000**3)
-        tx_gib = total_tx / (1000**3)
+        # Конвертируем из Байт в Гигабайты
+        rx_gib = total_rx / 1024 / 1024 / 1024
+        tx_gib = total_tx / 1024 / 1024 / 1024
         total_gib = rx_gib + tx_gib
         
         return total_gib, rx_gib, tx_gib
-
     except Exception as e:
-        print(f"Ошибка при чтении JSON: {e}")
-        traceback.print_exc()
+        print(f"Ошибка при чтении VNSTAT JSON: {e}")
         return None, 0, 0
 
+def get_system_stats():
+    """Читает сгенерированные хостом метрики CPU, RAM и Диска."""
+    try:
+        if not os.path.exists(SYSTEM_JSON_PATH):
+            return None
+        with open(SYSTEM_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Ошибка при чтении SYSTEM JSON: {e}")
+        return None
+
 def get_keyboard():
-    """Создает кнопку для главного меню."""
-    button = KeyboardButton(text="📊 Проверить трафик")
+    button = KeyboardButton(text="📊 Проверить статус")
     return ReplyKeyboardMarkup(keyboard=[[button]], resize_keyboard=True)
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Обработка команды /start."""
     if message.from_user.id == ADMIN_ID:
         await message.answer(
-            f"Привет! Бот настроен на чтение готовой статистики сервера.\n"
-            f"Лимит: {MONTHLY_LIMIT_GB} GB.\n"
+            f"Привет! Бот настроен на полный мониторинг сервера (Трафик + Нагрузка).\n"
+            f"Лимит трафика: {MONTHLY_LIMIT_GB} GB.\n"
+            f"Критический порог RAM: 50%.\n"
             f"Отчеты приходят каждый день в 8:00 МСК.",
             reply_markup=get_keyboard(),
             parse_mode="Markdown"
         )
 
-@dp.message(lambda message: message.text == "📊 Проверить трафик")
+@dp.message(lambda message: message.text == "📊 Проверить статус")
 async def send_stats(message: types.Message):
-    """Обработка нажатия на кнопку проверки трафика."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    total, rx, tx = get_vnstat_data()
-    if total is not None:
-        text = (
-            f"🌐 *Суммарный трафик сервера (Все интерфейсы):*\n\n"
-            f"📥 Всего принято (RX): `{rx:.2f} GB`\n"
-            f"📤 Всего отправлено (TX): `{tx:.2f} GB`\n"
-            f"🔄 *Итого за месяц:* `{total:.2f} GB`\n"
+    # Собираем все данные
+    total_tr, rx, tx = get_vnstat_data()
+    sys_stats = get_system_stats()
+
+    text = "🌐 *МОНИТОРИНГ СЕРВЕРА*\n\n"
+
+    # Формируем блок трафика
+    if total_tr is not None:
+        text += (
+            f"📈 *Сетевой трафик за месяц:*\n"
+            f"📥 Принято (RX): `{rx:.2f} GB`\n"
+            f"📤 Отправлено (TX): `{tx:.2f} GB`\n"
+            f"🔄 *Итого расход:* `{total_tr:.2f} GB` / `{MONTHLY_LIMIT_GB} GB`\n"
         )
-        if total > MONTHLY_LIMIT_GB:
-            text += f"\n🚨 *ВНИМАНИЕ! Общий лимит превышен на {total - MONTHLY_LIMIT_GB:.2f} GB!*"
-        
-        await message.answer(text, parse_mode="Markdown")
+        if total_tr > MONTHLY_LIMIT_GB:
+            text += f"🚨 *Лимит трафика превышен на {total_tr - MONTHLY_LIMIT_GB:.2f} GB!*\n"
     else:
-        await message.answer("Не удалось прочитать данные трафика. На сервере идет обновление файла.")
+        text += "❌ Не удалось получить данные о трафике.\n"
+
+    text += "\n"
+
+    # Формируем блок ресурсов железа
+    if sys_stats is not None:
+        ram = sys_stats.get('ram', {})
+        disk = sys_stats.get('disk', {})
+        cpu = sys_stats.get('cpu', {})
+
+        text += (
+            f"🖥️ *Ресурсы системы:*\n"
+            f"⚡ Загрузка CPU (LA 1m): `{cpu.get('load')}`\n"
+            f"🧠 Оперативная память (RAM):\n"
+            f"   `{ram.get('used_gb'):.2f} GB` / `{ram.get('total_gb'):.2f} GB` (*{ram.get('pct')}%*)\n"
+            f"💾 Жесткий диск (Раздел /):\n"
+            f"   Свободно `{disk.get('free_gb')} GB` из `{disk.get('total_gb')} GB`\n"
+        )
+        if ram.get('pct', 0) > 50.0:
+            text += f"\n🚨 *ВНИМАНИЕ: Нагрузка на RAM превышает 50%!*"
+    else:
+        text += "❌ Не удалось получить данные ресурсов системы.\n"
+
+    await message.answer(text, parse_mode="Markdown")
 
 async def scheduled_tasks():
-    """Фоновые задачи: ежедневный отчет и проверка лимитов."""
-    alert_sent_today = False 
+    alert_traffic_sent = False 
+    alert_ram_sent = False
+
     while True:
         now = datetime.now()
         
         # Утренний отчет в 8:00
         if now.hour == 8 and now.minute == 0:
-            total, rx, tx = get_vnstat_data()
-            if total is not None:
-                msg = f"🔔 *Ежедневный отчет по серверу:*\nОбщий расход: `{total:.2f} GB` из `{MONTHLY_LIMIT_GB} GB`."
+            total_tr, _, _ = get_vnstat_data()
+            sys_stats = get_system_stats()
+            if total_tr is not None and sys_stats is not None:
+                ram_pct = sys_stats.get('ram', {}).get('pct', 0)
+                msg = (
+                    f"🔔 *Ежедневный отчет:*\n"
+                    f"Сетевой трафик: `{total_tr:.2f} GB` из `{MONTHLY_LIMIT_GB} GB`.\n"
+                    f"Использование RAM: `{ram_pct}%`."
+                )
                 await bot.send_message(ADMIN_ID, msg, parse_mode="Markdown")
-            await asyncio.sleep(60)  # Защита от дублирования отправки в течение минуты
+            await asyncio.sleep(60)
             
-        # Проверка лимитов на превышение
-        total, _, _ = get_vnstat_data()
-        if total and total > MONTHLY_LIMIT_GB:
-            if not alert_sent_today:
+        # 1. Проверка лимитов трафика
+        total_tr, _, _ = get_vnstat_data()
+        if total_tr and total_tr > MONTHLY_LIMIT_GB:
+            if not alert_traffic_sent:
                 await bot.send_message(
                     ADMIN_ID, 
-                    f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ!*\nОбщий трафик сервера превысил лимит! Использовано: `{total:.2f} GB`.",
+                    f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ.*\nТрафик превысил лимит! Использовано: `{total_tr:.2f} GB`.",
                     parse_mode="Markdown"
                 )
-                alert_sent_today = True
+                alert_traffic_sent = True
         
-        # Сброс флага алерта в полночь
+        # 2. Проверка критического порога RAM > 50%
+        sys_stats = get_system_stats()
+        if sys_stats:
+            ram_pct = sys_stats.get('ram', {}).get('pct', 0)
+            if ram_pct > 50.0:
+                if not alert_ram_sent:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 *КРИТИЧЕСКИЙ АЛЕРТ.* Использование оперативной памяти RAM составило `{ram_pct}%` (Порог 50% превышен)!",
+                        parse_mode="Markdown"
+                    )
+                    alert_ram_sent = True
+            else:
+                # Если память опустилась ниже порога, сбрасываем флаг, чтобы при новом скачке бот снова прислал алерт
+                alert_ram_sent = False
+
+        # Полный сброс суточных алертов трафика в полночь
         if now.hour == 0 and now.minute == 0:
-            alert_sent_today = False
+            alert_traffic_sent = False
 
         await asyncio.sleep(30)
 
 async def main():
-    # Запускаем фоновый цикл задач и long polling бота
     asyncio.create_task(scheduled_tasks())
     await dp.start_polling(bot)
 
