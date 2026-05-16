@@ -1,2 +1,4 @@
 .env
 .venv
+deploy.sh
+vnstat_data.json
