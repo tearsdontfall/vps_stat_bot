@@ -1,12 +1,17 @@
-FROM python:3.10-slim
+# Используем легкий образ Python
+FROM python:3.11-slim
 
+# Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
-# Копируем файлы проекта
-COPY bot.py .
-COPY .env .
+# Копируем файл зависимостей
+COPY requirements.txt .
 
-# Устанавливаем только библиотеку для работы с Telegram-ботом
-RUN pip install --no-cache-dir aiogram python-dotenv
+# Устанавливаем библиотеки
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем весь код бота в контейнер
+COPY . .
+
+# ИНСТРУКЦИЯ: Указываем команду для запуска бота
 CMD ["python", "bot.py"]
