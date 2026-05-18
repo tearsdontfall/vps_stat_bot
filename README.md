@@ -43,7 +43,7 @@ BOT_TOKEN=ваш_токен_бота_из_BotFather
 ADMIN_ID=ваш_telegram_id_числом
 MONTHLY_LIMIT_GB=1000.0
 
-# Скопируйте скрипт деплоя на локальную машину, поправьте переменные под себя и запускайте:
+# Скопируйте скрипт деплоя на локальную машину, откройте скрипт /.deploy.sh, поправьте переменные под себя и запускайте:
 REMOTE_DIR="/opt/traffic_bot/vps_stat_bot"
 CONTAINER_NAME="my_traffic_bot"
 IMAGE_NAME="traffic_bot"
