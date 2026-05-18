@@ -1,4 +1,4 @@
-# 🌐 Telegram Server Monitor Bot
+# 🌐 VPS Monitor Bot
 
 Компактный Telegram-бот на Aiogram 3 и Docker для круглосуточного мониторинга ресурсов и сетевого трафика VPS-сервера.
 
